@@ -98,6 +98,11 @@
 
     <div class="panel">
         <h3>Analiza Algorytmu MakeMonotone(P)</h3>
+        <p style="font-size: 12px; color: #555; margin-top: -6px;">
+            W logu zapis <code>(i = ...)</code> oznacza indeks w numeracji wielokąta <code>V_i</code> (1-based),
+            a nie pozycję w kolejce priorytetowej <code>Q</code>. Dlatego pierwszy badany element może mieć np. <code>i = 5</code>,
+            jeśli najwyżej w <code>Q</code> leży <code>V_5</code>.
+        </p>
         <div class="log-box" id="monotoneLog">Log algorytmu pojawi się po wygenerowaniu...</div>
     </div>
 </div>
@@ -361,6 +366,20 @@
         let tLog = ["ROZPOCZĘCIE TRIANGULACJI (Kolejność przekątnych na stosie)\n"];
         let finalTriDiagonals = [];
 
+        // Używamy kluczy nieukierunkowanych, by nie dublować tych samych odcinków
+        let existingEdges = new Set();
+        function edgeKey(a, b) {
+            return a.id < b.id ? `${a.id}-${b.id}` : `${b.id}-${a.id}`;
+        }
+        function addTriDiagonal(a, b) {
+            if (a.id === b.id) return false;
+            let key = edgeKey(a, b);
+            if (existingEdges.has(key)) return false;
+            existingEdges.add(key);
+            finalTriDiagonals.push([a, b]);
+            return true;
+        }
+
         // Zbuduj graf z krawędzi brzegu i przekątnych
         let adjacency = {};
         for (let i=0; i<N; i++) {
@@ -370,10 +389,12 @@
             if(!adjacency[v.id]) adjacency[v.id] = [];
             adjacency[u.id].push(v.id);
             adjacency[v.id].push(u.id);
+            existingEdges.add(edgeKey(u, v));
         }
         for(let d of diagonals) {
             adjacency[d[0].id].push(d[1].id);
             adjacency[d[1].id].push(d[0].id);
+            existingEdges.add(edgeKey(d[0], d[1]));
         }
 
         // Sortuj sąsiadów wokół wierzchołka wg kąta (dla odnajdywania cykli/ścian)
@@ -389,6 +410,7 @@
         }
 
         let visitedHalfEdges = new Set();
+        let seenFaceKeys = new Set();
         let monotoneFaces = [];
 
         // Obchodzenie grafu (struktura DCEL) by znaleźć cykle
@@ -425,8 +447,22 @@
                     let p2 = vertices.find(n => n.id == faceIds[(k+1)%faceIds.length]);
                     fArea += p1.x * p2.y - p2.x * p1.y;
                 }
+
                 if(fArea > 0 && faceIds.length > 3) {
-                    monotoneFaces.push(faceIds.map(id => vertices.find(n => n.id == id)));
+                    // Unikalny klucz ściany niezależny od punktu startu i kierunku zapisu
+                    let minPos = 0;
+                    for (let i = 1; i < faceIds.length; i++) {
+                        if (faceIds[i] < faceIds[minPos]) minPos = i;
+                    }
+                    let norm = faceIds.slice(minPos).concat(faceIds.slice(0, minPos));
+                    let rev = [norm[0]].concat(norm.slice(1).reverse());
+                    let keyA = norm.join('-');
+                    let keyB = rev.join('-');
+                    let faceKey = keyA < keyB ? keyA : keyB;
+                    if (!seenFaceKeys.has(faceKey)) {
+                        seenFaceKeys.add(faceKey);
+                        monotoneFaces.push(faceIds.map(id => vertices.find(n => n.id == id)));
+                    }
                 }
             }
         }
@@ -445,19 +481,44 @@
             let top = sortedFace[0];
             let bottom = sortedFace[sortedFace.length-1];
 
-            // Przypisz lewy/prawy łańcuch
+            // Przypisz lewy/prawy łańcuch przez dwa przejścia między top i bottom
             let chain = {};
-            let startIndex = face.indexOf(top);
-            let curr = startIndex;
-            while(face[curr] !== bottom) {
-                chain[face[curr].id] = 'LEFT';
-                curr = (curr + 1) % face.length;
+            let m = face.length;
+            let topIdx = face.findIndex(v => v.id === top.id);
+            let bottomIdx = face.findIndex(v => v.id === bottom.id);
+
+            let forward = [face[topIdx]];
+            let idx = topIdx;
+            while (idx !== bottomIdx) {
+                idx = (idx + 1) % m;
+                forward.push(face[idx]);
             }
-            curr = (curr + 1) % face.length;
-            while(face[curr] !== top) {
-                chain[face[curr].id] = 'RIGHT';
-                curr = (curr + 1) % face.length;
+
+            let backward = [face[topIdx]];
+            idx = topIdx;
+            while (idx !== bottomIdx) {
+                idx = (idx - 1 + m) % m;
+                backward.push(face[idx]);
             }
+
+            function chainScore(path) {
+                let sum = 0;
+                let cnt = 0;
+                for (let i = 1; i < path.length - 1; i++) {
+                    let p = path[i];
+                    let side = (bottom.x - top.x) * (p.y - top.y) - (bottom.y - top.y) * (p.x - top.x);
+                    sum += side;
+                    cnt++;
+                }
+                return cnt ? sum / cnt : 0;
+            }
+
+            let forwardIsLeft = chainScore(forward) >= chainScore(backward);
+            let leftPath = forwardIsLeft ? forward : backward;
+            let rightPath = forwardIsLeft ? backward : forward;
+
+            for (let i = 1; i < leftPath.length - 1; i++) chain[leftPath[i].id] = 'LEFT';
+            for (let i = 1; i < rightPath.length - 1; i++) chain[rightPath[i].id] = 'RIGHT';
             chain[bottom.id] = 'BOTTOM';
             chain[top.id] = 'TOP';
 
@@ -472,15 +533,16 @@
 
                 tLog.push(`\n3-9. Badamy wierzchołek ${uj.name} (Łańcuch: ${uChain})`);
 
-                if(uChain !== topChain) { // if u_j i wierzchołek na szczycie są na różnych łańcuchach
+                if(uChain !== topChain) { // różne łańcuchy
                     tLog.push(` -> Różne łańcuchy. Zdejmujemy wszystkie z S.`);
-                    let lastPopped = stack.pop();
                     while(stack.length > 0) {
                         let popped = stack.pop();
-                        finalTriDiagonals.push([uj, popped]);
-                        tLog.push(`    Wstaw do D przekątną: ${uj.name} - ${popped.name}`);
+                        // Bez przekątnej do ostatniego zdjętego (adjacent do u_j)
+                        if (stack.length > 0 && addTriDiagonal(uj, popped)) {
+                            tLog.push(`    Wstaw do D przekątną: ${uj.name} - ${popped.name}`);
+                        }
                     }
-                    stack.push(lastPopped);
+                    stack.push(sortedFace[j - 1]);
                     stack.push(uj);
                     tLog.push(`    Włóż uj-1 i uj na stos: [${stack.map(v=>v.name).join(', ')}]`);
                 } else { // ten sam łańcuch
@@ -488,14 +550,15 @@
                     let lastPopped = stack.pop();
                     while(stack.length > 0) {
                         let currentTop = stack[stack.length-1];
-                        // Sprawdzenie "wnętrza"
-                        let turn = getTurn(uj, lastPopped, currentTop);
-                        let isInside = (uChain === 'LEFT') ? (turn > 0) : (turn < 0);
+                        // Test orientacji zgodny z klasycznym wariantem dla y-monotonicznego CCW
+                        let turn = getTurn(currentTop, lastPopped, uj);
+                        let isInside = (uChain === 'LEFT') ? (turn < 0) : (turn > 0);
 
                         if(isInside) {
+                            if (addTriDiagonal(uj, currentTop)) {
+                                tLog.push(`    Wstaw do D przekątną: ${uj.name} - ${currentTop.name}`);
+                            }
                             lastPopped = stack.pop();
-                            finalTriDiagonals.push([uj, lastPopped]);
-                            tLog.push(`    Wstaw do D przekątną: ${uj.name} - ${lastPopped.name}`);
                         } else {
                             break;
                         }
@@ -513,8 +576,9 @@
             stack.shift(); // usuń pierwszy
             while(stack.length > 0) {
                 let popped = stack.pop();
-                finalTriDiagonals.push([un, popped]);
-                tLog.push(`    Wstaw do D przekątną: ${un.name} - ${popped.name}`);
+                if (addTriDiagonal(un, popped)) {
+                    tLog.push(`    Wstaw do D przekątną: ${un.name} - ${popped.name}`);
+                }
             }
         });
 
